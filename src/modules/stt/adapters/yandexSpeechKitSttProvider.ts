@@ -153,7 +153,19 @@ export class YandexSpeechKitSttProvider implements SttProvider {
       });
     }
 
-    const res = await fetch(url, { method: "POST", headers, body });
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "POST", headers, body });
+    } catch (err) {
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      throw new DomainError({
+        code: "PROVIDER_STT_FAILED",
+        message: `SpeechKit network error: ${msg}`,
+        statusCode: 502,
+        retryable: true,
+        cause: err
+      });
+    }
     const text = await res.text();
     if (!res.ok) {
       throw new DomainError({

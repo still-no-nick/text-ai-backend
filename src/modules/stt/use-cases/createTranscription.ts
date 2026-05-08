@@ -60,15 +60,18 @@ export async function createTranscription(input: {
       throw err;
     }
 
+    const causeMessage =
+      err instanceof Error ? (err.message || err.name) : typeof err === "string" ? err : JSON.stringify(err);
+
     await input.repo.markFailed({
       id: task.id,
       code: "PROVIDER_STT_FAILED",
-      message: "STT provider failed",
+      message: `STT provider failed: ${causeMessage}`,
       retryable: true
     });
     throw new DomainError({
       code: "PROVIDER_STT_FAILED",
-      message: "STT provider failed",
+      message: `STT provider failed: ${causeMessage}`,
       statusCode: 502,
       retryable: true,
       cause: err

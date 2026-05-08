@@ -61,8 +61,6 @@ export async function registerSttRoutes(app: FastifyInstance, deps: { env: Env }
     const postProcess = parseBool(pickField(file.fields, "postProcess"), true);
     const kind = Kind.parse(pickField(file.fields, "kind") ?? "beautify");
 
-    app.log.info({ kind, style, postProcess, llmProvider: llm.name }, "STT request options");
-
     if (mode === "async") {
       const task = await repo.create({ language, provider: provider.name });
 
