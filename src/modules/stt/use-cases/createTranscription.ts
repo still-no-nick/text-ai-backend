@@ -3,13 +3,16 @@ import type { Readable } from "node:stream";
 import type { SttProvider } from "../ports/sttProvider.js";
 import type { TranscriptionRepository } from "../ports/transcriptionRepository.js";
 import { DomainError } from "../../../infra/http/errors.js";
-import { postProcessText } from "../../post-process/use-cases/postProcessText.js";
+import { postProcessText, type PostProcessKind } from "../../post-process/use-cases/postProcessText.js";
+import type { LlmProvider } from "../../post-process/ports/llmProvider.js";
 
 export async function createTranscription(input: {
   file: { stream: Readable; contentType?: string };
   language: string;
   postProcess: boolean;
   style: "chat" | "doc";
+  kind: PostProcessKind;
+  llm: LlmProvider;
   provider: SttProvider;
   repo: TranscriptionRepository;
 }) {
@@ -23,11 +26,17 @@ export async function createTranscription(input: {
     const stt = await input.provider.transcribeSync({
       audioStream: input.file.stream,
       language: input.language,
-      contentType: input.file.contentType
+      ...(input.file.contentType ? { contentType: input.file.contentType } : {})
     });
 
     const processed = input.postProcess
-      ? postProcessText({ text: stt.textRaw, language: input.language, style: input.style })
+      ? await postProcessText({
+          text: stt.textRaw,
+          language: input.language,
+          style: input.style,
+          kind: input.kind,
+          llm: input.llm
+        })
       : undefined;
 
     const done = await input.repo.markDone({
@@ -35,12 +44,22 @@ export async function createTranscription(input: {
       language: input.language,
       provider: input.provider.name,
       textRaw: stt.textRaw,
-      text: processed?.text,
-      providerMeta: stt.providerMeta
+      ...(processed?.text ? { text: processed.text } : {}),
+      ...(stt.providerMeta ? { providerMeta: stt.providerMeta } : {})
     });
 
     return done;
   } catch (err) {
+    if (err instanceof DomainError) {
+      await input.repo.markFailed({
+        id: task.id,
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable
+      });
+      throw err;
+    }
+
     await input.repo.markFailed({
       id: task.id,
       code: "PROVIDER_STT_FAILED",

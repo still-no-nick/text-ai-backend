@@ -1,18 +1,12 @@
 import { RU_FILLERS } from "../domain/fillers.js";
 import { DomainError } from "../../../infra/http/errors.js";
+import type { LlmProvider } from "../ports/llmProvider.js";
 
 export type PostProcessStyle = "chat" | "doc";
+export type PostProcessKind = "beautify" | "expand" | "compress";
 
-export function postProcessText(input: { text: string; language?: string; style: PostProcessStyle }): { text: string } {
+function beautify(input: { text: string; style: PostProcessStyle }): { text: string } {
   const raw = input.text.trim();
-  if (!raw) {
-    throw new DomainError({
-      code: "VALIDATION_FAILED",
-      message: "text is required",
-      statusCode: 400
-    });
-  }
-
   const tokens = raw
     .replace(/\s+/g, " ")
     .split(" ")
@@ -40,5 +34,53 @@ export function postProcessText(input: { text: string; language?: string; style:
   text = text.replace(/^(\p{L})/u, (m) => m.toUpperCase());
 
   return { text };
+}
+
+export async function postProcessText(input: {
+  text: string;
+  language?: string;
+  style: PostProcessStyle;
+  kind?: PostProcessKind;
+  llm: LlmProvider;
+}): Promise<{ text: string }> {
+  const raw = input.text.trim();
+  if (!raw) {
+    throw new DomainError({
+      code: "VALIDATION_FAILED",
+      message: "text is required",
+      statusCode: 400
+    });
+  }
+
+  const kind = input.kind ?? "beautify";
+  if (kind === "beautify") {
+    return beautify({ text: raw, style: input.style });
+  }
+
+  const base = beautify({ text: raw, style: "chat" }).text;
+
+  const system = [
+    "You are a careful Russian editor.",
+    "Do not invent facts or add details that are not in the source.",
+    "Preserve the original meaning.",
+    "Return plain text only. No markdown, no quotes, no bullet characters unless they were implied by the content."
+  ].join("\n");
+
+  const user =
+    kind === "expand"
+      ? `Расширь текст по смыслу, слегка перефразируя, но не добавляя новых фактов:\n\n${base}`
+      : `Сожми текст, чтобы осталась суть (без потери ключевых мыслей) и без добавления новых фактов:\n\n${base}`;
+
+  const out = (await input.llm.generate({ system, user })).trim();
+  if (!out) {
+    throw new DomainError({
+      code: "POST_PROCESS_FAILED",
+      message: "LLM returned empty response",
+      statusCode: 502,
+      retryable: true
+    });
+  }
+
+  return { text: out };
 }
 

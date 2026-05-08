@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { TranscriptionStatus } from "@prisma/client";
 
 import type { TranscriptionRepository } from "../ports/transcriptionRepository.js";
@@ -20,15 +20,14 @@ function toDomain(row: {
   return {
     id: row.id,
     status: row.status,
-    language: row.language ?? undefined,
     provider: row.provider,
-    textRaw: row.textRaw ?? undefined,
-    text: row.text ?? undefined,
-    providerMeta: (row.providerMeta as Record<string, unknown> | null) ?? undefined,
-    error:
-      row.errorCode && row.errorMessage
-        ? { code: row.errorCode, message: row.errorMessage, retryable: row.errorRetryable ?? false }
-        : undefined
+    ...(row.language ? { language: row.language } : {}),
+    ...(row.textRaw ? { textRaw: row.textRaw } : {}),
+    ...(row.text ? { text: row.text } : {}),
+    ...(row.providerMeta ? { providerMeta: row.providerMeta as Record<string, unknown> } : {}),
+    ...(row.errorCode && row.errorMessage
+      ? { error: { code: row.errorCode, message: row.errorMessage, retryable: row.errorRetryable ?? false } }
+      : {})
   };
 }
 
@@ -64,7 +63,9 @@ export class PrismaTranscriptionRepository implements TranscriptionRepository {
         provider: input.provider,
         textRaw: input.textRaw,
         text: input.text ?? null,
-        providerMeta: (input.providerMeta ?? null) as Prisma.JsonValue
+        providerMeta: input.providerMeta
+          ? (input.providerMeta as Prisma.InputJsonValue)
+          : Prisma.DbNull
       }
     });
     return toDomain(row);

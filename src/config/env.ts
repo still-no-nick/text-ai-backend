@@ -9,8 +9,11 @@ const envSchema = z.object({
 
   YANDEX_FOLDER_ID: z.string().optional(),
   YANDEX_IAM_TOKEN: z.string().optional(),
+  YANDEX_API_KEY: z.string().optional(),
 
-  LLM_PROVIDER: z.enum(["mock"]).default("mock")
+  LLM_PROVIDER: z.enum(["mock", "yandexgpt"]).default("mock"),
+  YANDEX_GPT_ENDPOINT: z.string().optional(),
+  YANDEX_GPT_MODEL_URI: z.string().optional()
 });
 
 export type Env = z.infer<typeof envSchema>;

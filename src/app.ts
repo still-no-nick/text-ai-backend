@@ -2,7 +2,6 @@ import Fastify from "fastify";
 import sensible from "@fastify/sensible";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import { fastifyZodOpenApiPlugin, fastifyZodOpenApiTransform, fastifyZodOpenApiTransformObject } from "@fastify/zod";
 
 import type { Env } from "./config/env.js";
 import { registerErrorHandler } from "./infra/http/errors.js";
@@ -25,12 +24,21 @@ export async function buildApp(deps: { env: Env }) {
         : true
   });
 
-  await app.register(sensible);
-
-  await app.register(fastifyZodOpenApiPlugin, {
-    transform: fastifyZodOpenApiTransform,
-    transformObject: fastifyZodOpenApiTransformObject
+  // Dev-friendly CORS without extra dependency.
+  app.addHook("onRequest", async (req, reply) => {
+    const origin = req.headers.origin;
+    if (typeof origin === "string") {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+      reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    }
+    if (req.method === "OPTIONS") {
+      void reply.status(204).send();
+    }
   });
+
+  await app.register(sensible);
 
   await app.register(multipart, {
     limits: {
@@ -44,7 +52,7 @@ export async function buildApp(deps: { env: Env }) {
   await registerSwagger(app);
 
   await registerHealthRoutes(app);
-  await registerPostProcessRoutes(app);
+  await registerPostProcessRoutes(app, { env: deps.env });
   await registerSttRoutes(app, { env: deps.env });
   await registerSessionsRoutes(app, { env: deps.env });
 

@@ -7,6 +7,7 @@
 ## Цель
 
 Обеспечить серверную транскрибацию аудио и LLM-постпроцесс текста для качества «как у Wispr Flow»:
+
 - Запятые, точки, абзацы
 - Списки (нумерованные и маркированные)
 - Удаление филлеров («э», «мэ», «ну», паузы)
@@ -22,19 +23,22 @@
 
 Загрузить записанное приложением аудио и запустить распознавание в Yandex SpeechKit.
 
-Бэкенд сам определяет, делать синхронное распознавание (короткие записи) или асинхронную задачу (длинные записи).
+Текущая реализация поддерживает два режима:
+
+- `mode=sync|auto` — распознавание выполняется синхронно и ответ сразу содержит текст
+- `mode=async` — ответ возвращается сразу со статусом `processing`, а распознавание продолжается в фоне; результат доступен через `GET /api/stt/transcriptions/:id`
 
 **Request (multipart/form-data):**
-- `file` (required) — аудио-файл (рекомендуется: `webm/opus` из браузера)
+
+- `file` (required) — аудио-файл (MVP: рекомендуются `audio/wav` или `audio/ogg`)
 - `language` (optional, default: `"ru-RU"`) — BCP-47 (`ru-RU`, `en-US`, ...)
-- `format` (optional) — если не удаётся определить автоматически:
-  - `"webm_opus" | "ogg_opus" | "wav_pcm_s16le"`
-- `sampleRate` (optional) — Hz (для PCM обязателен, для Opus обычно не нужен)
 - `mode` (optional, default: `"auto"`) — `"auto" | "sync" | "async"`
 - `postProcess` (optional, default: `true`) — прогонять ли результат через `/api/post-process`
 - `style` (optional, default: `"chat"`) — `"chat" | "doc"` (передаётся в `/api/post-process`)
+- `kind` (optional, default: `"beautify"`) — `"beautify" | "expand" | "compress"` (передаётся в `/api/post-process`)
 
 **Response (sync, когда удалось распознать сразу):**
+
 ```json
 {
   "id": "uuid-v4",
@@ -44,12 +48,16 @@
   "text": "Сырой текст.",
   "provider": "yandex_speechkit",
   "providerMeta": {
-    "requestId": "string"
+    "format": "lpcm",
+    "httpStatus": 200
   }
 }
 ```
 
+`text` — опционален и присутствует только если включён `postProcess=true`. Если постпроцесс выключен, используйте `textRaw` (или `text ?? textRaw`).
+
 **Response (async, если распознавание запущено задачей):**
+
 ```json
 {
   "id": "uuid-v4",
@@ -59,14 +67,27 @@
 }
 ```
 
+Примечания:
+
+- `provider` сейчас может быть `"yandex_speechkit"` (если настроены креды) или `"mock_stt"` (если не настроены).
+- `providerMeta` — произвольный объект. Для `"yandex_speechkit"` сейчас возвращается минимум `{ "format": "lpcm" | "oggopus", "httpStatus": number }`.
+
 **Status codes:**
+
 - `201 Created` — запрос принят (sync или async)
-- `400 Bad Request` — неподдерживаемый формат/параметры
+- `400 Bad Request` — невалидные параметры / отсутствует `file`
 - `401 Unauthorized` — нет токена пользователя (если у вас есть пользовательская авторизация)
-- `413 Payload Too Large` — файл слишком большой
-- `415 Unsupported Media Type` — неподдерживаемый MIME/container
+- `413 Payload Too Large` — файл слишком большой для текущего sync-пути распознавания (лимит ~25MB у провайдера)
+- `415 Unsupported Media Type` — неподдерживаемый `Content-Type` (например `audio/webm`) или невалидный WAV/не-PCM WAV
 - `429 Too Many Requests` — лимиты превышены
 - `502 Bad Gateway` — ошибка провайдера STT
+
+**Поддерживаемые форматы (MVP):**
+
+- `audio/wav` / `audio/x-wav` — WAV контейнер с PCM внутри
+- `audio/ogg` — OGG/Opus
+
+`audio/webm` (WebM/Opus) пока **не поддержан** без транскодинга и будет возвращать `415`.
 
 ---
 
@@ -75,6 +96,7 @@
 Получить статус и результат распознавания.
 
 **Response (processing):**
+
 ```json
 {
   "id": "uuid-v4",
@@ -83,6 +105,7 @@
 ```
 
 **Response (done):**
+
 ```json
 {
   "id": "uuid-v4",
@@ -98,6 +121,7 @@
 ```
 
 **Response (failed):**
+
 ```json
 {
   "id": "uuid-v4",
@@ -111,6 +135,7 @@
 ```
 
 **Status codes:**
+
 - `200 OK`
 - `404 Not Found` — неизвестный `id`
 
@@ -121,6 +146,7 @@
 Создать сессию записи (WebSocket-транскрибации).
 
 **Request:**
+
 ```json
 {
   "language": "ru-RU"
@@ -128,25 +154,33 @@
 ```
 
 **Response:**
+
 ```json
 {
-  "sessionId": "uuid-v4",
-  "wsUrl": "wss://api.example.com/api/transcribe?sessionId=..."
+  "sessionId": "string",
+  "wsUrl": "ws://<host>:<port>/api/transcribe?sessionId=...&language=ru-RU"
 }
 ```
 
+`sessionId` — строка (сейчас генерируется как `nanoid`, не UUID).
+
 **Status codes:**
+
 - `201 Created` — сессия создана
 - `401 Unauthorized` — нет токена или истёк
 - `429 Too Many Requests` — лимит сессий превышен
 
 ---
 
-### 2. `WS /api/transcribe?sessionId=<uuid>`
+### 2. `WS /api/transcribe?sessionId=<string>&language=<bcp47>`
 
 Стрим транскрибации в реальном времени.
 
+**Статус реализации:** сейчас endpoint существует как заглушка и всегда отправляет
+`{ "type": "error", "code": "NOT_IMPLEMENTED", ... }`, после чего закрывает соединение.
+
 **Client → Server (audio chunk):**
+
 ```json
 {
   "type": "audio",
@@ -157,6 +191,7 @@
 ```
 
 **Server → Client (partial result):**
+
 ```json
 {
   "type": "partial",
@@ -166,6 +201,7 @@
 ```
 
 **Server → Client (final result):**
+
 ```json
 {
   "type": "final",
@@ -175,6 +211,7 @@
 ```
 
 **Server → Client (error):**
+
 ```json
 {
   "type": "error",
@@ -184,6 +221,7 @@
 ```
 
 **Notes:**
+
 - Формат аудио: PCM 16 kHz / Opus 48 kHz, mono
 - Чанки ~100–200 мс рекомендуется
 - Partial results отдаются каждые ~0.5–1s для real-time ощущения
@@ -197,15 +235,18 @@
 LLM-постпроцесс сырого текста (пунктуация, абзацы, списки, удаление филлеров).
 
 **Request:**
+
 ```json
 {
   "text": "сырой текст без пунктуации э ну типа",
   "language": "ru",
-  "style": "chat"
+  "style": "chat",
+  "kind": "beautify"
 }
 ```
 
 **Response:**
+
 ```json
 {
   "text": "Сырой текст без пунктуации, типа."
@@ -213,13 +254,19 @@ LLM-постпроцесс сырого текста (пунктуация, аб
 ```
 
 **Parameters:**
+
 - `text` (string, required) — сырой транскрибированный текст
 - `language` (string, optional, default: `"ru"`) — ISO код языка
 - `style` (`"chat" | "doc"`, optional, default: `"chat"`) — стиль оформления:
   - `"chat"` — короткие предложения, разговорный стиль
   - `"doc"` — абзацы, списки, заголовки при наличии структуры
+- `kind` (`"beautify" | "expand" | "compress"`, optional, default: `"beautify"`) — режим преобразования:
+  - `"beautify"` — орфография/пунктуация без изменения смысла
+  - `"expand"` — расширение по смыслу с перефразированием (не добавлять факты)
+  - `"compress"` — сжатие, чтобы оставить суть (не терять ключевые мысли)
 
 **Status codes:**
+
 - `200 OK` — текст обработан
 - `400 Bad Request` — пустой `text` или невалидные параметры
 - `401 Unauthorized`
